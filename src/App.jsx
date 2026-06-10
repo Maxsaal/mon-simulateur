@@ -1,15 +1,13 @@
 import { useState, useMemo } from 'react';
-import { LineChart, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, ReferenceLine, CartesianGrid } from 'recharts';
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine } from 'recharts';
 
 // ============================================================
-// FINANCIAL CALCULATIONS
+// CALCULS FINANCIERS
 // ============================================================
-
 function pmt(rate, nper, pv) {
   if (rate === 0) return -pv / nper;
   return (-pv * rate) / (1 - Math.pow(1 + rate, -nper));
 }
-
 function fv(rate, nper, pmtVal, pv) {
   if (rate === 0) return -(pv + pmtVal * nper);
   return -(pv * Math.pow(1 + rate, nper) + pmtVal * (Math.pow(1 + rate, nper) - 1) / rate);
@@ -17,77 +15,56 @@ function fv(rate, nper, pmtVal, pv) {
 
 function computeModel(p) {
   const rows = [];
-  const monthlyRate = p.taux / 12;
+  const mRate = p.taux / 12;
   const totalMonths = p.dureeCredit * 12;
   const fraisNotaire = p.prix * p.tauxNotaire;
   const apportEffectif = p.apport - fraisNotaire;
-  const montantEmprunte = p.prix + p.travaux - apportEffectif;
-  const mensualiteCredit = -pmt(monthlyRate, totalMonths, montantEmprunte);
+  const montantEmprunte = Math.max(0, p.prix + p.travaux - apportEffectif);
+  const mensualite = montantEmprunte > 0 ? -pmt(mRate, totalMonths, montantEmprunte) : 0;
   const assuranceMensuelle = (montantEmprunte * p.tauxAssurance) / 12;
-  const cashResiduel = p.cashTotal - p.apport;
+  const cashResiduel = Math.max(0, p.cashTotal - p.apport);
 
-  let portfolioInitial = cashResiduel;
-  let portfolioDifferentiel = 0;
-  let portfolioInitialLoc = p.cashTotal;
-  let portfolioDifferentielLoc = 0;
+  let portfAchat = cashResiduel;
+  let portfLocInit = p.cashTotal;
+  let portfLocDiff = 0;
 
   for (let n = 0; n <= 25; n++) {
     const valeurBien = p.prix * Math.pow(1 + p.appreciation, n);
     let crd = 0;
-    if (n <= p.dureeCredit) {
-      crd = -fv(monthlyRate, n * 12, -mensualiteCredit, montantEmprunte);
-    }
+    if (n > 0 && n <= p.dureeCredit) crd = -fv(mRate, n * 12, -mensualite, montantEmprunte);
+    else if (n === 0) crd = montantEmprunte;
 
-    const annuiteCreditNu = n === 0 ? 0 : (n <= p.dureeCredit ? mensualiteCredit * 12 : 0);
-    const annuiteAssurance = n === 0 ? 0 : (n <= p.dureeCredit ? assuranceMensuelle * 12 : 0);
-    const taxeFonciere = n === 0 ? 0 : p.taxeFonciereInit * Math.pow(1 + p.inflationTaxe, n - 1);
+    const annuiteCredit = n === 0 ? 0 : (n <= p.dureeCredit ? mensualite * 12 : 0);
+    const annuiteAssur = n === 0 ? 0 : (n <= p.dureeCredit ? assuranceMensuelle * 12 : 0);
+    const taxe = n === 0 ? 0 : p.taxeFonciere * Math.pow(1 + p.inflationTaxe, n - 1);
     const entretien = n === 0 ? 0 : valeurBien * p.tauxEntretien;
-    const charges = n === 0 ? 0 : (p.chargesPiscine + p.assuranceHabProp) * Math.pow(1 + p.inflationCharges, n - 1);
-    const coutAnnuelProp = annuiteCreditNu + annuiteAssurance + taxeFonciere + entretien + charges;
+    const charges = n === 0 ? 0 : (p.charges + p.assuranceHabProp) * Math.pow(1 + p.inflationCharges, n - 1);
+    const coutProp = annuiteCredit + annuiteAssur + taxe + entretien + charges;
 
-    const equiteBien = valeurBien * (1 - p.fraisAgence) - crd;
-    const patrimoineAchat = equiteBien + portfolioInitial;
+    const equite = valeurBien * (1 - p.fraisAgence) - crd;
+    const patrimoineAchat = equite + portfAchat;
 
     const loyerAnnuel = n === 0 ? 0 : p.loyer * 12 * Math.pow(1 + p.irl, n - 1);
-    const assuranceLoc = n === 0 ? 0 : p.assuranceHabLoc * Math.pow(1 + p.inflationCharges, n - 1);
-    const coutLocataireTotal = loyerAnnuel + assuranceLoc;
-    const economieLocataire = coutAnnuelProp - coutLocataireTotal;
-    const investissementAnnuel = Math.max(0, economieLocataire) * p.discipline;
-
-    const patrimoineLocation = portfolioInitialLoc + portfolioDifferentielLoc;
+    const assurLoc = n === 0 ? 0 : p.assuranceHabLoc * Math.pow(1 + p.inflationCharges, n - 1);
+    const coutLoc = loyerAnnuel + assurLoc;
+    const economie = coutProp - coutLoc;
+    const investAnnuel = Math.max(0, economie) * p.discipline;
+    const patrimoineLoc = portfLocInit + portfLocDiff;
 
     rows.push({
-      annee: n,
-      valeurBien,
-      crd,
-      coutAnnuelProp,
-      equiteBien,
-      patrimoineAchat,
-      portfolioInitialAchat: portfolioInitial,
-      coutLocataireTotal,
-      economieLocataire,
-      investissementAnnuel,
-      portfolioInitialLoc,
-      portfolioDifferentielLoc,
-      patrimoineLocation,
+      annee: n, valeurBien, crd, coutProp, equite, patrimoineAchat,
+      coutLoc, economie, investAnnuel, patrimoineLoc,
     });
 
-    // Update portfolios for next year
-    portfolioInitial *= (1 + p.rendement);
-    portfolioInitialLoc *= (1 + p.rendement);
-    portfolioDifferentielLoc = portfolioDifferentielLoc * (1 + p.rendement) + investissementAnnuel;
+    portfAchat *= (1 + p.rendement);
+    portfLocInit *= (1 + p.rendement);
+    portfLocDiff = portfLocDiff * (1 + p.rendement) + investAnnuel;
   }
 
   return {
-    rows,
-    fraisNotaire,
-    apportEffectif,
-    montantEmprunte,
-    mensualiteCredit,
-    assuranceMensuelle,
-    mensualiteTotale: mensualiteCredit + assuranceMensuelle,
-    cashResiduel,
-    ratioPrixLoyer: p.prix / (p.loyer * 12),
+    rows, fraisNotaire, montantEmprunte, mensualite,
+    mensualiteTotale: mensualite + assuranceMensuelle, cashResiduel,
+    ratioPrixLoyer: p.loyer > 0 ? p.prix / (p.loyer * 12) : 0,
   };
 }
 
@@ -95,524 +72,372 @@ function computeModel(p) {
 // FORMATTERS
 // ============================================================
 const fmtEur = (n) => {
+  if (!isFinite(n)) return '—';
   if (Math.abs(n) >= 1e6) return `${(n / 1e6).toFixed(2)} M€`;
   if (Math.abs(n) >= 1e3) return `${Math.round(n / 1e3).toLocaleString('fr-FR')} k€`;
   return `${Math.round(n).toLocaleString('fr-FR')} €`;
 };
-const fmtEurFull = (n) => `${Math.round(n).toLocaleString('fr-FR')} €`;
-const fmtPct = (n) => `${(n * 100).toFixed(2)} %`;
+const fmtEurFull = (n) => isFinite(n) ? `${Math.round(n).toLocaleString('fr-FR')} €` : '—';
 
 // ============================================================
-// REUSABLE INPUT COMPONENT
+// SLIDER PARAMÈTRE
 // ============================================================
-function InputRow({ label, value, onChange, suffix, step = 1, hint, isPct }) {
-  const displayValue = isPct ? (value * 100).toFixed(2) : value;
+function Param({ label, value, onChange, min, max, step, format, hint }) {
   return (
-    <div className="flex items-center justify-between gap-2 py-2 border-b border-stone-200/70 last:border-b-0">
-      <div className="flex-1">
-        <div className="text-[12.5px] text-stone-700 leading-tight">{label}</div>
-        {hint && <div className="text-[10.5px] text-stone-400 italic mt-0.5">{hint}</div>}
+    <div className="param">
+      <div className="param-head">
+        <label>{label}</label>
+        <span className="param-val">{format(value)}</span>
       </div>
-      <div className="flex items-center gap-1.5 shrink-0">
-        <input
-          type="number"
-          step={step}
-          value={displayValue}
-          onChange={(e) => {
-            const raw = parseFloat(e.target.value);
-            if (isNaN(raw)) return;
-            onChange(isPct ? raw / 100 : raw);
-          }}
-          className="w-24 px-2 py-1 text-right text-[13px] tabular-nums bg-amber-50 border border-amber-200/80 rounded focus:outline-none focus:ring-2 focus:ring-orange-400/40 focus:border-orange-500 transition-all"
-          style={{ fontFamily: '"JetBrains Mono", monospace' }}
-        />
-        <span className="text-[11px] text-stone-500 w-5">{suffix}</span>
-      </div>
-    </div>
-  );
-}
-
-function CalcRow({ label, value, fmt = fmtEur, accent }) {
-  return (
-    <div className="flex items-center justify-between gap-2 py-2 border-b border-stone-200/70 last:border-b-0">
-      <div className="text-[12.5px] text-stone-600">{label}</div>
-      <div
-        className={`text-[13px] tabular-nums font-medium ${accent ? 'text-orange-700' : 'text-stone-900'}`}
-        style={{ fontFamily: '"JetBrains Mono", monospace' }}
-      >
-        {fmt(value)}
-      </div>
-    </div>
-  );
-}
-
-function SectionTitle({ children, num }) {
-  return (
-    <div className="flex items-baseline gap-3 mb-3">
-      <span
-        className="text-[10px] tracking-[0.2em] text-orange-700 font-semibold"
-        style={{ fontFamily: '"JetBrains Mono", monospace' }}
-      >
-        §{num}
-      </span>
-      <h3
-        className="text-[13.5px] tracking-[0.12em] uppercase text-stone-900 font-semibold"
-        style={{ fontFamily: '"DM Sans", sans-serif' }}
-      >
-        {children}
-      </h3>
+      <input
+        type="range" min={min} max={max} step={step} value={value}
+        onChange={(e) => onChange(parseFloat(e.target.value))}
+        className="slider"
+      />
+      {hint && <div className="param-hint">{hint}</div>}
     </div>
   );
 }
 
 // ============================================================
-// MAIN COMPONENT
+// APP
 // ============================================================
 export default function App() {
-  const [params, setParams] = useState({
-    prix: 800000,
-    tauxNotaire: 0.08,
-    travaux: 100000,
-    appreciation: 0.015,
-    fraisAgence: 0.05,
-    cashTotal: 600000,
-    apport: 300000,
-    dureeCredit: 25,
-    taux: 0.033,
-    tauxAssurance: 0.003,
-    taxeFonciereInit: 3000,
-    inflationTaxe: 0.03,
-    tauxEntretien: 0.01,
-    chargesPiscine: 2000,
-    assuranceHabProp: 800,
-    inflationCharges: 0.02,
-    loyer: 2200,
-    irl: 0.015,
-    assuranceHabLoc: 200,
-    rendement: 0.05,
-    discipline: 0.7,
+  const [p, setP] = useState({
+    prix: 825000, apport: 300000, loyer: 2200, dureeCredit: 20, taux: 0.033,
+    rendement: 0.06, discipline: 0.7,
+    // avancés
+    tauxNotaire: 0.08, travaux: 30000, appreciation: 0.015, fraisAgence: 0.05,
+    cashTotal: 600000, tauxAssurance: 0.003, taxeFonciere: 1500, inflationTaxe: 0.03,
+    tauxEntretien: 0.01, charges: 2000, assuranceHabProp: 800, inflationCharges: 0.02,
+    irl: 0.015, assuranceHabLoc: 200,
   });
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showSensi, setShowSensi] = useState(false);
+  const [horizon, setHorizon] = useState(20);
 
-  const update = (key) => (value) => setParams((p) => ({ ...p, [key]: value }));
+  const set = (k) => (v) => setP((prev) => ({ ...prev, [k]: v }));
+  const m = useMemo(() => computeModel(p), [p]);
 
-  const model = useMemo(() => computeModel(params), [params]);
+  const r = m.rows[horizon];
+  const verdict = r.patrimoineLoc > r.patrimoineAchat ? 'LOUER' : 'ACHETER';
+  const ecart = Math.abs(r.patrimoineLoc - r.patrimoineAchat);
 
-  const horizons = [5, 10, 15, 20, 25];
-  const synthese = horizons.map((h) => {
-    const r = model.rows[h];
-    return {
-      horizon: h,
-      achat: r.patrimoineAchat,
-      location: r.patrimoineLocation,
-      ecart: r.patrimoineLocation - r.patrimoineAchat,
-      verdict: r.patrimoineLocation > r.patrimoineAchat ? 'LOCATION' : 'ACHAT',
-    };
-  });
-
-  const verdictGlobal20 = synthese[3].verdict;
-  const ecart20 = Math.abs(synthese[3].ecart);
-
-  const chartData = model.rows.slice(1).map((r) => ({
-    annee: r.annee,
-    'Patrimoine ACHAT': Math.round(r.patrimoineAchat / 1000),
-    'Patrimoine LOCATION': Math.round(r.patrimoineLocation / 1000),
+  const chartData = m.rows.slice(1).map((row) => ({
+    annee: row.annee,
+    Acheter: Math.round(row.patrimoineAchat / 1000),
+    Louer: Math.round(row.patrimoineLoc / 1000),
   }));
 
-  // Sensitivity table: discipline × rendement, patrimoine LOCATION at 20 years
   const disciplines = [0, 0.3, 0.5, 0.7, 1.0];
-  const rendements = [0.02, 0.03, 0.04, 0.05, 0.06, 0.07];
-
-  const sensiTable = disciplines.map((d) =>
-    rendements.map((r) => {
-      const m = computeModel({ ...params, discipline: d, rendement: r });
-      return Math.round(m.rows[20].patrimoineLocation / 1000);
-    })
+  const rendements = [0.03, 0.04, 0.05, 0.06, 0.07];
+  const sensi = disciplines.map((d) =>
+    rendements.map((rd) => Math.round(computeModel({ ...p, discipline: d, rendement: rd }).rows[20].patrimoineLoc / 1000))
   );
+  const achat20 = Math.round(m.rows[20].patrimoineAchat / 1000);
 
   return (
     <>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
-        body { margin: 0; }
-        .display-font { font-family: "Fraunces", serif; font-feature-settings: "ss01" on, "ss02" on; }
-        .body-font { font-family: "DM Sans", sans-serif; }
-        .mono-font { font-family: "JetBrains Mono", monospace; }
-        .grain {
-          background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.08 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+        @import url('https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=Inter:wght@400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap');
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background: #0E1B2C; }
+        .app {
+          --ink:#0E1B2C; --ink2:#1B2D44; --paper:#F7F5F0; --line:#D8D3C7;
+          --buy:#0E7C5A; --rent:#C9622E; --muted:#6B7686; --accent:#E8B23A;
+          font-family:'Inter',sans-serif; color:var(--ink); background:var(--paper);
+          min-height:100vh;
         }
+        .wrap { max-width:1180px; margin:0 auto; padding:0 16px; }
+
+        /* HEADER */
+        .hero { background:var(--ink); color:var(--paper); padding:36px 0 30px; }
+        .hero-eyebrow { font-family:'Roboto Mono',monospace; font-size:11px; letter-spacing:.28em;
+          text-transform:uppercase; color:var(--accent); margin-bottom:14px; }
+        .hero h1 { font-family:'Newsreader',serif; font-weight:500; font-size:clamp(30px,6vw,52px);
+          line-height:1.04; letter-spacing:-.01em; }
+        .hero h1 em { font-style:italic; color:var(--accent); }
+        .hero p { margin-top:14px; font-size:14px; line-height:1.6; color:#B9C2CF; max-width:560px; }
+
+        /* LAYOUT */
+        .grid { display:grid; grid-template-columns:1fr; gap:0; }
+        @media(min-width:900px){ .grid { grid-template-columns:380px 1fr; } }
+
+        /* PANNEAU PARAMÈTRES */
+        .panel { background:var(--paper); padding:26px 0; }
+        @media(min-width:900px){
+          .panel-left { border-right:1px solid var(--line); padding-right:30px; }
+          .panel-right { padding-left:30px; }
+        }
+        .panel-title { font-family:'Roboto Mono',monospace; font-size:11px; letter-spacing:.2em;
+          text-transform:uppercase; color:var(--muted); margin-bottom:18px;
+          display:flex; align-items:center; gap:8px; }
+        .panel-title::before { content:''; width:18px; height:2px; background:var(--accent); }
+
+        .param { margin-bottom:20px; }
+        .param-head { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:7px; }
+        .param-head label { font-size:13.5px; font-weight:500; color:var(--ink); }
+        .param-val { font-family:'Roboto Mono',monospace; font-size:14px; font-weight:500;
+          color:var(--ink); background:#ECE8DF; padding:2px 9px; border-radius:5px; }
+        .param-hint { font-size:11px; color:var(--muted); margin-top:5px; font-style:italic; }
+        .slider { -webkit-appearance:none; appearance:none; width:100%; height:4px; border-radius:4px;
+          background:var(--line); outline:none; cursor:pointer; }
+        .slider::-webkit-slider-thumb { -webkit-appearance:none; appearance:none; width:18px; height:18px;
+          border-radius:50%; background:var(--ink); border:3px solid var(--paper);
+          box-shadow:0 0 0 1px var(--ink); cursor:pointer; transition:transform .1s; }
+        .slider::-webkit-slider-thumb:hover { transform:scale(1.15); }
+        .slider::-moz-range-thumb { width:18px; height:18px; border-radius:50%; background:var(--ink);
+          border:3px solid var(--paper); box-shadow:0 0 0 1px var(--ink); cursor:pointer; }
+
+        .disclosure { width:100%; text-align:left; background:none; border:none; cursor:pointer;
+          font-family:'Roboto Mono',monospace; font-size:11px; letter-spacing:.15em; text-transform:uppercase;
+          color:var(--muted); padding:14px 0; border-top:1px solid var(--line); display:flex;
+          justify-content:space-between; align-items:center; }
+        .disclosure:hover { color:var(--ink); }
+        .disclosure .chev { transition:transform .2s; }
+        .disclosure.open .chev { transform:rotate(180deg); }
+
+        /* VERDICT */
+        .verdict { padding:22px; border-radius:12px; margin-bottom:22px; color:var(--paper); }
+        .verdict.buy { background:var(--buy); }
+        .verdict.rent { background:var(--rent); }
+        .verdict-label { font-family:'Roboto Mono',monospace; font-size:11px; letter-spacing:.2em;
+          text-transform:uppercase; opacity:.8; margin-bottom:8px; }
+        .verdict-main { font-family:'Newsreader',serif; font-size:38px; font-weight:600; line-height:1; }
+        .verdict-sub { margin-top:10px; font-size:13.5px; opacity:.95; line-height:1.5; }
+
+        /* HORIZON TABS */
+        .horizons { display:flex; gap:6px; margin-bottom:20px; }
+        .htab { flex:1; padding:9px 4px; border:1px solid var(--line); background:var(--paper);
+          border-radius:8px; cursor:pointer; font-family:'Roboto Mono',monospace; font-size:12.5px;
+          font-weight:500; color:var(--muted); transition:all .12s; text-align:center; }
+        .htab:hover { border-color:var(--ink); }
+        .htab.active { background:var(--ink); color:var(--paper); border-color:var(--ink); }
+
+        /* STATS */
+        .stats { display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--line);
+          border:1px solid var(--line); border-radius:10px; overflow:hidden; margin-bottom:22px; }
+        .stat { background:var(--paper); padding:15px; }
+        .stat-k { font-size:11px; color:var(--muted); margin-bottom:5px; }
+        .stat-v { font-family:'Roboto Mono',monospace; font-size:17px; font-weight:500; color:var(--ink); }
+        .stat-v.buy { color:var(--buy); } .stat-v.rent { color:var(--rent); }
+
+        /* CHART */
+        .chart-card { border:1px solid var(--line); border-radius:12px; padding:18px 14px 10px;
+          background:var(--paper); margin-bottom:22px; }
+        .chart-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;
+          padding:0 4px; flex-wrap:wrap; gap:8px; }
+        .chart-title { font-family:'Newsreader',serif; font-size:18px; font-weight:500; }
+        .legend { display:flex; gap:14px; font-size:11.5px; }
+        .legend span { display:flex; align-items:center; gap:6px; color:var(--muted); }
+        .dot { width:10px; height:3px; border-radius:2px; }
+
+        /* SENSI TABLE */
+        .sensi { border:1px solid var(--line); border-radius:12px; overflow:hidden; margin-bottom:10px; }
+        .sensi table { width:100%; border-collapse:collapse; font-family:'Roboto Mono',monospace; font-size:12px; }
+        .sensi th, .sensi td { padding:9px 6px; text-align:center; border-bottom:1px solid var(--line); }
+        .sensi th { background:#ECE8DF; font-weight:500; color:var(--ink); font-size:11px; }
+        .sensi td.rowhead { background:#F0EDE5; font-weight:500; }
+        .sensi td.win { color:var(--rent); font-weight:500; }
+        .sensi td.lose { color:var(--muted); }
+        .sensi td.here { background:var(--accent); color:var(--ink); font-weight:700; }
+        .sensi-cap { font-size:11px; color:var(--muted); padding:10px 12px; background:#F0EDE5; font-style:italic; }
+
+        /* FOOTER */
+        .foot { background:var(--ink); color:#9AA6B6; padding:26px 0; font-size:11.5px; line-height:1.6; }
+        .foot strong { color:var(--paper); font-weight:600; display:block; margin-bottom:6px;
+          font-family:'Roboto Mono',monospace; font-size:10px; letter-spacing:.2em; text-transform:uppercase; }
+        .foot a { color:var(--accent); }
       `}</style>
 
-      <div className="min-h-screen bg-[#FAF7F2] text-stone-900 body-font relative">
-        {/* Grain texture overlay */}
-        <div className="grain fixed inset-0 pointer-events-none opacity-50 z-50 mix-blend-multiply"></div>
-
-        {/* HEADER */}
-        <header className="border-b border-stone-300/60 bg-[#FAF7F2]">
-          <div className="max-w-[1380px] mx-auto px-6 lg:px-10 py-8 lg:py-12">
-            <div className="flex items-start justify-between gap-6">
-              <div className="flex-1">
-                <div className="flex items-center gap-3 mb-3">
-                  <div className="w-1.5 h-1.5 bg-orange-700 rounded-full animate-pulse"></div>
-                  <span className="text-[10px] tracking-[0.3em] text-stone-600 mono-font uppercase">
-                    Simulateur patrimonial · v1.0
-                  </span>
-                </div>
-                <h1 className="display-font text-[40px] lg:text-[58px] leading-[0.95] tracking-tight font-medium text-stone-900">
-                  Acheter ou louer
-                  <span className="italic text-orange-700">,</span>
-                  <br />
-                  <span className="italic text-stone-500">vraiment ?</span>
-                </h1>
-                <p className="mt-4 text-[14px] text-stone-600 max-w-2xl leading-relaxed">
-                  Un modèle financier rigoureux pour comparer l'achat de votre résidence principale à la location avec investissement de l'épargne.
-                  Chaque paramètre est ajustable — la conclusion change avec vos hypothèses.
-                </p>
-              </div>
-              <div className="hidden lg:block text-right shrink-0">
-                <div className="text-[10px] tracking-[0.2em] text-stone-500 mono-font uppercase mb-1">Verdict 20 ans</div>
-                <div
-                  className={`display-font text-[34px] font-medium leading-none ${
-                    verdictGlobal20 === 'LOCATION' ? 'text-orange-700' : 'text-emerald-700'
-                  }`}
-                >
-                  {verdictGlobal20}
-                </div>
-                <div className="text-[11px] text-stone-500 mono-font mt-1">
-                  +{fmtEur(ecart20)}
-                </div>
-              </div>
-            </div>
+      <div className="app">
+        {/* HERO */}
+        <header className="hero">
+          <div className="wrap">
+            <div className="hero-eyebrow">Décision patrimoniale · simulateur</div>
+            <h1>Acheter, ou louer et investir <em>?</em></h1>
+            <p>Réglez vos hypothèses à gauche. Le verdict et la projection de votre patrimoine se recalculent instantanément. Deux stratégies, comparées sur 25 ans.</p>
           </div>
         </header>
 
-        <main className="max-w-[1380px] mx-auto px-6 lg:px-10 py-10 lg:py-14">
-          {/* SYNTHÈSE — TOP */}
-          <section className="mb-14">
-            <div className="grid grid-cols-2 lg:grid-cols-5 gap-px bg-stone-300/60 rounded-lg overflow-hidden border border-stone-300/60">
-              {synthese.map((s) => (
-                <div key={s.horizon} className="bg-[#FAF7F2] p-5 lg:p-6 hover:bg-amber-50/50 transition-colors">
-                  <div className="text-[10px] tracking-[0.2em] text-stone-500 mono-font uppercase mb-3">
-                    Horizon · {s.horizon} ans
-                  </div>
-                  <div className="space-y-2 mb-4">
-                    <div className="flex justify-between items-baseline">
-                      <span className="text-[11px] text-stone-500">Achat</span>
-                      <span className="mono-font text-[13px] tabular-nums text-stone-700">{fmtEur(s.achat)}</span>
-                    </div>
-                    <div className="flex justify-between items-baseline">
-                      <span className="text-[11px] text-stone-500">Location</span>
-                      <span className="mono-font text-[13px] tabular-nums text-stone-700">{fmtEur(s.location)}</span>
-                    </div>
-                  </div>
-                  <div className={`pt-3 border-t border-stone-300/50 ${s.verdict === 'LOCATION' ? 'text-orange-700' : 'text-emerald-700'}`}>
-                    <div className="display-font text-[22px] font-medium leading-none">{s.verdict}</div>
-                    <div className="text-[11px] mono-font tabular-nums mt-1 opacity-70">
-                      écart {fmtEur(Math.abs(s.ecart))}
-                    </div>
-                  </div>
+        <div className="wrap">
+          <div className="grid">
+            {/* ===== COLONNE GAUCHE : PARAMÈTRES ===== */}
+            <div className="panel panel-left">
+              <div className="panel-title">Vos hypothèses</div>
+
+              <Param label="Prix du bien" value={p.prix} onChange={set('prix')}
+                min={200000} max={2000000} step={5000} format={fmtEurFull} />
+              <Param label="Apport personnel" value={p.apport} onChange={set('apport')}
+                min={0} max={Math.min(p.cashTotal, p.prix)} step={5000} format={fmtEurFull}
+                hint={`Frais de notaire estimés : ${fmtEurFull(m.fraisNotaire)}`} />
+              <Param label="Loyer actuel (mensuel)" value={p.loyer} onChange={set('loyer')}
+                min={500} max={6000} step={50} format={fmtEurFull}
+                hint="Le loyer que vous payez aujourd'hui" />
+              <Param label="Durée du crédit" value={p.dureeCredit} onChange={set('dureeCredit')}
+                min={10} max={25} step={1} format={(v) => `${v} ans`} />
+              <Param label="Taux du crédit" value={p.taux} onChange={set('taux')}
+                min={0.01} max={0.06} step={0.0005} format={(v) => `${(v * 100).toFixed(2)} %`}
+                hint="Taux nominal annuel hors assurance" />
+              <Param label="Rendement de l'épargne placée" value={p.rendement} onChange={set('rendement')}
+                min={0.01} max={0.09} step={0.0025} format={(v) => `${(v * 100).toFixed(2)} %`}
+                hint="Ex : ETF Monde via PEA ≈ 6-7 % nets sur long terme" />
+              <Param label="Discipline d'investissement" value={p.discipline} onChange={set('discipline')}
+                min={0} max={1} step={0.05} format={(v) => `${Math.round(v * 100)} %`}
+                hint="Part de l'économie réellement investie chaque mois" />
+
+              {/* AVANCÉ */}
+              <button className={`disclosure ${showAdvanced ? 'open' : ''}`} onClick={() => setShowAdvanced(!showAdvanced)}>
+                <span>Hypothèses avancées</span>
+                <span className="chev">▾</span>
+              </button>
+              {showAdvanced && (
+                <div style={{ paddingTop: 4 }}>
+                  <Param label="Frais de notaire" value={p.tauxNotaire} onChange={set('tauxNotaire')}
+                    min={0.02} max={0.10} step={0.005} format={(v) => `${(v * 100).toFixed(1)} %`} />
+                  <Param label="Travaux & ameublement" value={p.travaux} onChange={set('travaux')}
+                    min={0} max={200000} step={5000} format={fmtEurFull} />
+                  <Param label="Appréciation du bien / an" value={p.appreciation} onChange={set('appreciation')}
+                    min={-0.01} max={0.05} step={0.0025} format={(v) => `${(v * 100).toFixed(2)} %`} />
+                  <Param label="Frais d'agence à la revente" value={p.fraisAgence} onChange={set('fraisAgence')}
+                    min={0} max={0.07} step={0.005} format={(v) => `${(v * 100).toFixed(1)} %`} />
+                  <Param label="Cash total disponible" value={p.cashTotal} onChange={set('cashTotal')}
+                    min={p.apport} max={1500000} step={10000} format={fmtEurFull} />
+                  <Param label="Taxe foncière (an 1)" value={p.taxeFonciere} onChange={set('taxeFonciere')}
+                    min={500} max={6000} step={100} format={fmtEurFull} />
+                  <Param label="Entretien (% valeur / an)" value={p.tauxEntretien} onChange={set('tauxEntretien')}
+                    min={0} max={0.03} step={0.0025} format={(v) => `${(v * 100).toFixed(2)} %`} />
+                  <Param label="Charges + assurance (proprio)" value={p.charges} onChange={set('charges')}
+                    min={0} max={6000} step={250} format={fmtEurFull} />
+                  <Param label="Indexation du loyer (IRL)" value={p.irl} onChange={set('irl')}
+                    min={0} max={0.04} step={0.0025} format={(v) => `${(v * 100).toFixed(2)} %`} />
                 </div>
-              ))}
-            </div>
-          </section>
-
-          {/* PARAMETERS GRID */}
-          <section className="mb-14">
-            <div className="mb-6">
-              <h2 className="display-font italic text-[26px] text-stone-700 mb-1">Paramètres</h2>
-              <p className="text-[12px] text-stone-500">Modifiez les valeurs — tout se recalcule en temps réel.</p>
+              )}
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-              {/* COL 1 : BIEN + FINANCEMENT */}
-              <div className="space-y-6">
-                <div className="bg-white/60 border border-stone-200/80 rounded-lg p-5 backdrop-blur-sm">
-                  <SectionTitle num="01">Bien immobilier</SectionTitle>
-                  <InputRow label="Prix du bien" value={params.prix} onChange={update('prix')} suffix="€" step={5000} />
-                  <InputRow label="Frais de notaire" value={params.tauxNotaire} onChange={update('tauxNotaire')} suffix="%" isPct step={0.5} hint="Bouches-du-Rhône post-DMTO ~8%" />
-                  <InputRow label="Travaux & ameublement" value={params.travaux} onChange={update('travaux')} suffix="€" step={5000} />
-                  <InputRow label="Appréciation annuelle" value={params.appreciation} onChange={update('appreciation')} suffix="%" isPct step={0.25} hint="Aix médiane ~1.5%/an" />
-                  <InputRow label="Frais d'agence à la revente" value={params.fraisAgence} onChange={update('fraisAgence')} suffix="%" isPct step={0.5} />
-                </div>
+            {/* ===== COLONNE DROITE : RÉSULTATS ===== */}
+            <div className="panel panel-right">
+              <div className="panel-title">Le verdict</div>
 
-                <div className="bg-white/60 border border-stone-200/80 rounded-lg p-5 backdrop-blur-sm">
-                  <SectionTitle num="02">Financement</SectionTitle>
-                  <InputRow label="Cash total disponible" value={params.cashTotal} onChange={update('cashTotal')} suffix="€" step={10000} />
-                  <InputRow label="Apport injecté" value={params.apport} onChange={update('apport')} suffix="€" step={10000} />
-                  <InputRow label="Durée du crédit" value={params.dureeCredit} onChange={update('dureeCredit')} suffix="ans" step={1} />
-                  <InputRow label="Taux nominal annuel" value={params.taux} onChange={update('taux')} suffix="%" isPct step={0.1} hint="Avril 2026 : ~3.30% sur 25 ans" />
-                  <InputRow label="Assurance emprunteur" value={params.tauxAssurance} onChange={update('tauxAssurance')} suffix="%" isPct step={0.05} />
+              {/* HORIZON */}
+              <div className="horizons">
+                {[5, 10, 15, 20, 25].map((h) => (
+                  <button key={h} className={`htab ${horizon === h ? 'active' : ''}`} onClick={() => setHorizon(h)}>
+                    {h} ans
+                  </button>
+                ))}
+              </div>
+
+              {/* VERDICT */}
+              <div className={`verdict ${verdict === 'ACHETER' ? 'buy' : 'rent'}`}>
+                <div className="verdict-label">À {horizon} ans, mieux vaut</div>
+                <div className="verdict-main">{verdict}</div>
+                <div className="verdict-sub">
+                  Écart de patrimoine net : <strong>{fmtEur(ecart)}</strong> en faveur de cette stratégie.
                 </div>
               </div>
 
-              {/* COL 2 : COÛTS RÉCURRENTS + LOCATION */}
-              <div className="space-y-6">
-                <div className="bg-white/60 border border-stone-200/80 rounded-lg p-5 backdrop-blur-sm">
-                  <SectionTitle num="03">Coûts propriétaire récurrents</SectionTitle>
-                  <InputRow label="Taxe foncière (an 1)" value={params.taxeFonciereInit} onChange={update('taxeFonciereInit')} suffix="€" step={100} />
-                  <InputRow label="Inflation taxe foncière" value={params.inflationTaxe} onChange={update('inflationTaxe')} suffix="%" isPct step={0.5} />
-                  <InputRow label="Entretien (% valeur/an)" value={params.tauxEntretien} onChange={update('tauxEntretien')} suffix="%" isPct step={0.25} hint="1% standard, 1.5-2% pour maison ancienne" />
-                  <InputRow label="Charges piscine + autres" value={params.chargesPiscine} onChange={update('chargesPiscine')} suffix="€" step={500} />
-                  <InputRow label="Assurance habitation propriétaire" value={params.assuranceHabProp} onChange={update('assuranceHabProp')} suffix="€" step={50} />
-                  <InputRow label="Inflation autres charges" value={params.inflationCharges} onChange={update('inflationCharges')} suffix="%" isPct step={0.5} />
+              {/* STATS */}
+              <div className="stats">
+                <div className="stat">
+                  <div className="stat-k">Patrimoine si ACHAT</div>
+                  <div className="stat-v buy">{fmtEur(r.patrimoineAchat)}</div>
                 </div>
-
-                <div className="bg-white/60 border border-stone-200/80 rounded-lg p-5 backdrop-blur-sm">
-                  <SectionTitle num="04">Location</SectionTitle>
-                  <InputRow label="Loyer mensuel actuel" value={params.loyer} onChange={update('loyer')} suffix="€" step={50} />
-                  <InputRow label="Indexation IRL" value={params.irl} onChange={update('irl')} suffix="%" isPct step={0.25} hint="IRL réel ~1.5-2%/an" />
-                  <InputRow label="Assurance habitation locataire" value={params.assuranceHabLoc} onChange={update('assuranceHabLoc')} suffix="€" step={20} />
+                <div className="stat">
+                  <div className="stat-k">Patrimoine si LOCATION</div>
+                  <div className="stat-v rent">{fmtEur(r.patrimoineLoc)}</div>
                 </div>
-              </div>
-
-              {/* COL 3 : INVESTMENT + RESULTS */}
-              <div className="space-y-6">
-                <div className="bg-white/60 border border-stone-200/80 rounded-lg p-5 backdrop-blur-sm">
-                  <SectionTitle num="05">Investissement</SectionTitle>
-                  <InputRow label="Rendement portefeuille net" value={params.rendement} onChange={update('rendement')} suffix="%" isPct step={0.25} hint="ETF Monde via PEA ~5-7% nets" />
-                  <InputRow label="Discipline d'investissement" value={params.discipline} onChange={update('discipline')} suffix="%" isPct step={5} hint="100%=parfaite | 70%=normale | 30%=limitée" />
+                <div className="stat">
+                  <div className="stat-k">Mensualité de crédit</div>
+                  <div className="stat-v">{fmtEurFull(m.mensualiteTotale)}</div>
                 </div>
-
-                <div className="bg-stone-900 text-stone-100 rounded-lg p-5">
-                  <SectionTitle num="06">
-                    <span className="text-stone-100">Résultats clés</span>
-                  </SectionTitle>
-                  <div className="space-y-2 text-stone-300">
-                    <div className="flex justify-between items-baseline py-1.5 border-b border-stone-700/50">
-                      <span className="text-[12px]">Frais de notaire</span>
-                      <span className="mono-font text-[13px] tabular-nums">{fmtEurFull(model.fraisNotaire)}</span>
-                    </div>
-                    <div className="flex justify-between items-baseline py-1.5 border-b border-stone-700/50">
-                      <span className="text-[12px]">Montant emprunté</span>
-                      <span className="mono-font text-[13px] tabular-nums">{fmtEurFull(model.montantEmprunte)}</span>
-                    </div>
-                    <div className="flex justify-between items-baseline py-1.5 border-b border-stone-700/50">
-                      <span className="text-[12px]">Mensualité totale</span>
-                      <span className="mono-font text-[13px] tabular-nums text-orange-400 font-medium">{fmtEurFull(model.mensualiteTotale)}</span>
-                    </div>
-                    <div className="flex justify-between items-baseline py-1.5 border-b border-stone-700/50">
-                      <span className="text-[12px]">Cash résiduel à investir</span>
-                      <span className="mono-font text-[13px] tabular-nums">{fmtEurFull(model.cashResiduel)}</span>
-                    </div>
-                    <div className="flex justify-between items-baseline py-1.5">
-                      <span className="text-[12px]">Ratio prix / loyer annuel</span>
-                      <span className={`mono-font text-[13px] tabular-nums font-medium ${
-                        model.ratioPrixLoyer < 18 ? 'text-emerald-400' :
-                        model.ratioPrixLoyer < 25 ? 'text-amber-400' : 'text-orange-400'
-                      }`}>
-                        {model.ratioPrixLoyer.toFixed(1)}
-                      </span>
-                    </div>
-                  </div>
-                  <p className="text-[10px] text-stone-500 italic mt-3 leading-relaxed">
-                    Ratio &lt;15 : achat OK · 18-25 : zone grise · &gt;25 : louer plus rationnel
-                  </p>
+                <div className="stat">
+                  <div className="stat-k">Ratio prix / loyer annuel</div>
+                  <div className="stat-v">{m.ratioPrixLoyer.toFixed(1)}</div>
                 </div>
               </div>
-            </div>
-          </section>
 
-          {/* CHART */}
-          <section className="mb-14">
-            <div className="mb-6 flex items-baseline justify-between flex-wrap gap-3">
-              <div>
-                <h2 className="display-font italic text-[26px] text-stone-700 mb-1">Évolution du patrimoine</h2>
-                <p className="text-[12px] text-stone-500">Projection sur 25 ans selon les hypothèses ci-dessus.</p>
-              </div>
-              <div className="flex gap-4 text-[11px] mono-font">
-                <div className="flex items-center gap-2">
-                  <div className="w-4 h-0.5 bg-emerald-700"></div>
-                  <span className="text-stone-600">ACHAT</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-4 h-0.5 bg-orange-700"></div>
-                  <span className="text-stone-600">LOCATION</span>
-                </div>
-              </div>
-            </div>
-
-            <div className="bg-white/60 border border-stone-200/80 rounded-lg p-5 lg:p-7">
-              <div style={{ width: '100%', height: 380 }}>
-                <ResponsiveContainer>
-                  <LineChart data={chartData} margin={{ top: 10, right: 30, left: 30, bottom: 10 }}>
-                    <CartesianGrid strokeDasharray="2 4" stroke="#D6D3D1" vertical={false} />
-                    <XAxis
-                      dataKey="annee"
-                      tick={{ fontSize: 11, fill: '#78716C', fontFamily: 'JetBrains Mono' }}
-                      axisLine={{ stroke: '#A8A29E' }}
-                      tickLine={{ stroke: '#A8A29E' }}
-                      label={{ value: 'Année', position: 'insideBottom', offset: -5, style: { fontSize: 11, fill: '#78716C' } }}
-                    />
-                    <YAxis
-                      tick={{ fontSize: 11, fill: '#78716C', fontFamily: 'JetBrains Mono' }}
-                      axisLine={{ stroke: '#A8A29E' }}
-                      tickLine={{ stroke: '#A8A29E' }}
-                      tickFormatter={(v) => `${v >= 1000 ? (v / 1000).toFixed(1) + ' M' : v + ' k'}`}
-                      label={{ value: 'Patrimoine (k€)', angle: -90, position: 'insideLeft', style: { fontSize: 11, fill: '#78716C' } }}
-                    />
-                    <Tooltip
-                      contentStyle={{
-                        background: '#FAF7F2',
-                        border: '1px solid #D6D3D1',
-                        borderRadius: 6,
-                        fontSize: 12,
-                        fontFamily: 'DM Sans',
-                      }}
-                      formatter={(v) => `${v.toLocaleString('fr-FR')} k€`}
-                      labelFormatter={(l) => `Année ${l}`}
-                    />
-                    <Legend wrapperStyle={{ fontSize: 11, paddingTop: 10 }} />
-                    <Line
-                      type="monotone"
-                      dataKey="Patrimoine ACHAT"
-                      stroke="#047857"
-                      strokeWidth={2.5}
-                      dot={false}
-                      activeDot={{ r: 5, fill: '#047857' }}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="Patrimoine LOCATION"
-                      stroke="#C2410C"
-                      strokeWidth={2.5}
-                      dot={false}
-                      activeDot={{ r: 5, fill: '#C2410C' }}
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-          </section>
-
-          {/* SENSITIVITY TABLE */}
-          <section className="mb-14">
-            <div className="mb-6">
-              <h2 className="display-font italic text-[26px] text-stone-700 mb-1">Sensibilité</h2>
-              <p className="text-[12px] text-stone-500">
-                Patrimoine LOCATION à 20 ans (k€) selon discipline d'investissement × rendement portefeuille.
-              </p>
-            </div>
-
-            <div className="bg-white/60 border border-stone-200/80 rounded-lg overflow-hidden">
-              <table className="w-full text-[12px] mono-font tabular-nums">
-                <thead>
-                  <tr className="bg-stone-100/80 border-b border-stone-200">
-                    <th className="text-left p-3 text-[10px] tracking-widest uppercase text-stone-500 font-medium">
-                      Disc. ↓ / Rdt. →
-                    </th>
-                    {rendements.map((r) => (
-                      <th key={r} className="p-3 text-stone-700 font-medium text-center">
-                        {(r * 100).toFixed(0)} %
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {disciplines.map((d, i) => (
-                    <tr key={d} className="border-b border-stone-200/50 last:border-0">
-                      <td className="p-3 bg-stone-100/50 text-stone-700 font-medium text-center">
-                        {(d * 100).toFixed(0)} %
-                      </td>
-                      {sensiTable[i].map((v, j) => {
-                        const achat20 = Math.round(synthese[3].achat / 1000);
-                        const isWin = v > achat20;
-                        return (
-                          <td
-                            key={j}
-                            className={`p-3 text-center ${
-                              isWin ? 'text-orange-700' : 'text-stone-500'
-                            } ${d === params.discipline && rendements[j] === params.rendement ? 'bg-amber-100 font-bold' : ''}`}
-                          >
-                            {v.toLocaleString('fr-FR')}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <div className="px-4 py-3 bg-stone-50/50 border-t border-stone-200 text-[11px] text-stone-500 italic flex items-center gap-3 flex-wrap">
-                <span><span className="inline-block w-3 h-3 bg-amber-100 rounded mr-1.5 align-middle border border-amber-200"></span>Vos paramètres actuels</span>
-                <span><span className="text-orange-700 font-bold">orange</span> = Location bat l'achat à 20 ans ({fmtEur(synthese[3].achat)})</span>
-              </div>
-            </div>
-          </section>
-
-          {/* INTERPRETATION */}
-          <section className="mb-14">
-            <div className="bg-stone-900 text-stone-100 rounded-lg p-7 lg:p-10">
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                <div>
-                  <div className="text-[10px] tracking-[0.3em] text-orange-400 mono-font uppercase mb-3">Interprétation</div>
-                  <h3 className="display-font text-[26px] leading-tight font-medium mb-4">
-                    Ce que disent <span className="italic text-orange-400">vraiment</span> ces chiffres
-                  </h3>
-                  <div className="space-y-3 text-[13px] leading-relaxed text-stone-300">
-                    <p>
-                      Le <span className="text-orange-400 font-medium">ratio prix / loyer</span> ({model.ratioPrixLoyer.toFixed(1)}) est le premier indicateur. Sous 15, l'achat est presque toujours rationnel ; au-dessus de 25, la location avec investissement discipliné gagne mathématiquement.
-                    </p>
-                    <p>
-                      La <span className="text-orange-400 font-medium">discipline d'investissement</span> est le facteur le plus sensible. Si vous savez que vous n'investirez pas réellement la différence chaque mois, l'achat redevient gagnant grâce à l'épargne forcée du crédit.
-                    </p>
-                    <p>
-                      L'<span className="text-orange-400 font-medium">apport optimal</span> minimise la dette tout en gardant un capital qui travaille en bourse. Plus l'écart entre votre rendement de placement et votre taux de crédit est grand, moins vous devriez apporter.
-                    </p>
+              {/* CHART */}
+              <div className="chart-card">
+                <div className="chart-head">
+                  <div className="chart-title">Patrimoine net, an par an</div>
+                  <div className="legend">
+                    <span><i className="dot" style={{ background: 'var(--buy)' }}></i>Acheter</span>
+                    <span><i className="dot" style={{ background: 'var(--rent)' }}></i>Louer + investir</span>
                   </div>
                 </div>
-                <div>
-                  <div className="text-[10px] tracking-[0.3em] text-orange-400 mono-font uppercase mb-3">À tester</div>
-                  <h3 className="display-font text-[26px] leading-tight font-medium mb-4">
-                    Quatre scenarios <span className="italic text-orange-400">qui changent tout</span>
-                  </h3>
-                  <ul className="space-y-3 text-[13px] leading-relaxed text-stone-300">
-                    <li className="flex gap-3">
-                      <span className="mono-font text-orange-400 shrink-0">→</span>
-                      <span>Mettez la <span className="text-stone-100">discipline à 30 %</span> — observez l'achat reprendre l'avantage.</span>
-                    </li>
-                    <li className="flex gap-3">
-                      <span className="mono-font text-orange-400 shrink-0">→</span>
-                      <span>Réduisez l'<span className="text-stone-100">apport à 200 k€</span> — l'effet de levier maximal.</span>
-                    </li>
-                    <li className="flex gap-3">
-                      <span className="mono-font text-orange-400 shrink-0">→</span>
-                      <span>Passez l'<span className="text-stone-100">appréciation à 3 %/an</span> (Aix tendu) — l'achat se relance.</span>
-                    </li>
-                    <li className="flex gap-3">
-                      <span className="mono-font text-orange-400 shrink-0">→</span>
-                      <span>Testez un <span className="text-stone-100">rendement à 7 %</span> (S&P 500 historique) — la location creuse l'écart.</span>
-                    </li>
-                  </ul>
+                <div style={{ width: '100%', height: 300 }}>
+                  <ResponsiveContainer>
+                    <LineChart data={chartData} margin={{ top: 6, right: 14, left: 6, bottom: 4 }}>
+                      <CartesianGrid strokeDasharray="2 4" stroke="#E2DDD2" vertical={false} />
+                      <XAxis dataKey="annee" tick={{ fontSize: 11, fill: '#6B7686', fontFamily: 'Roboto Mono' }}
+                        axisLine={{ stroke: '#D8D3C7' }} tickLine={false} />
+                      <YAxis tick={{ fontSize: 11, fill: '#6B7686', fontFamily: 'Roboto Mono' }}
+                        axisLine={false} tickLine={false}
+                        tickFormatter={(v) => v >= 1000 ? `${(v / 1000).toFixed(1)}M` : `${v}k`} width={42} />
+                      <Tooltip
+                        contentStyle={{ background: '#0E1B2C', border: 'none', borderRadius: 8,
+                          fontSize: 12, fontFamily: 'Inter', color: '#F7F5F0' }}
+                        labelStyle={{ color: '#E8B23A', fontFamily: 'Roboto Mono', fontSize: 11 }}
+                        formatter={(v, name) => [`${v.toLocaleString('fr-FR')} k€`, name]}
+                        labelFormatter={(l) => `Année ${l}`} />
+                      <ReferenceLine x={horizon} stroke="#E8B23A" strokeDasharray="3 3" strokeWidth={1.5} />
+                      <Line type="monotone" dataKey="Acheter" stroke="#0E7C5A" strokeWidth={2.5} dot={false}
+                        activeDot={{ r: 5 }} />
+                      <Line type="monotone" dataKey="Louer" stroke="#C9622E" strokeWidth={2.5} dot={false}
+                        activeDot={{ r: 5 }} />
+                    </LineChart>
+                  </ResponsiveContainer>
                 </div>
               </div>
-            </div>
-          </section>
 
-          {/* DISCLAIMER */}
-          <footer className="border-t border-stone-300/60 pt-8 mt-14">
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 text-[11px] text-stone-500">
-              <div>
-                <div className="text-[10px] tracking-[0.2em] mono-font uppercase text-stone-700 font-semibold mb-2">Disclaimer</div>
-                <p className="leading-relaxed">
-                  Cet outil est fourni à titre <span className="italic">pédagogique uniquement</span>. Il ne constitue ni un conseil en investissement, ni une recommandation patrimoniale ou immobilière. Pour un conseil personnalisé, consultez un professionnel agréé (notaire, CGP, courtier).
-                </p>
-              </div>
-              <div>
-                <div className="text-[10px] tracking-[0.2em] mono-font uppercase text-stone-700 font-semibold mb-2">Méthodologie</div>
-                <p className="leading-relaxed">
-                  Modèle de cash-flow année par année avec capitalisation des portefeuilles d'investissement. Plus-value sur résidence principale considérée exonérée. Frais de transaction (notaire, agence) intégrés. Le patrimoine net inclut équité immobilière et portefeuille financier.
-                </p>
-              </div>
-              <div>
-                <div className="text-[10px] tracking-[0.2em] mono-font uppercase text-stone-700 font-semibold mb-2">Limites</div>
-                <p className="leading-relaxed">
-                  Hypothèses de rendement déterministes (pas de volatilité simulée). Pas de prise en compte de l'inflation générale dans la valorisation des flux. Fiscalité simplifiée. Les marchés financiers comme immobiliers comportent des risques de perte en capital.
-                </p>
-              </div>
+              {/* SENSIBILITÉ */}
+              <button className={`disclosure ${showSensi ? 'open' : ''}`} onClick={() => setShowSensi(!showSensi)}>
+                <span>Table de sensibilité (à 20 ans)</span>
+                <span className="chev">▾</span>
+              </button>
+              {showSensi && (
+                <div className="sensi">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Disc. ↓ / Rdt →</th>
+                        {rendements.map((rd) => <th key={rd}>{(rd * 100).toFixed(0)}%</th>)}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {disciplines.map((d, i) => (
+                        <tr key={d}>
+                          <td className="rowhead">{(d * 100).toFixed(0)}%</td>
+                          {sensi[i].map((v, j) => {
+                            const isHere = d === p.discipline && rendements[j] === p.rendement;
+                            const win = v > achat20;
+                            return (
+                              <td key={j} className={isHere ? 'here' : win ? 'win' : 'lose'}>
+                                {v.toLocaleString('fr-FR')}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <div className="sensi-cap">
+                    Patrimoine LOCATION (k€) à 20 ans. En orange : la location dépasse l'achat ({fmtEur(m.rows[20].patrimoineAchat)}). En jaune : vos réglages actuels.
+                  </div>
+                </div>
+              )}
             </div>
-            <div className="text-[10px] mono-font tracking-widest text-stone-400 uppercase mt-8 text-center">
-              · simulateur achat vs location · v 1.0 · 2026 ·
-            </div>
-          </footer>
-        </main>
+          </div>
+        </div>
+
+        {/* FOOTER */}
+        <footer className="foot">
+          <div className="wrap">
+            <strong>Outil pédagogique</strong>
+            Ce simulateur est fourni à titre informatif et pédagogique uniquement. Il ne constitue ni un conseil en investissement, ni une recommandation patrimoniale ou immobilière. Les hypothèses de rendement sont déterministes et ne reflètent pas la volatilité réelle des marchés. Pour une décision personnalisée, consultez un professionnel agréé (notaire, conseiller en gestion de patrimoine, courtier).
+          </div>
+        </footer>
       </div>
     </>
   );
